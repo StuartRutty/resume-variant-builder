@@ -234,11 +234,11 @@ def build(data, spec, pdf_path, email_override=None):
     story = []
     story.append(Paragraph(esc(b["name"]), s_title))
     story.append(Paragraph(esc(b["headline"]), s_head))
-    linkedin = ""
+    links = []
     for cf in b.get("customFields", []):
         if cf.get("link"):
-            linkedin = cf["link"]
-    contact = " | ".join(x for x in [email_override or b.get("email"), b.get("phone"), b.get("location"), linkedin] if x)
+            links.append(cf["link"])
+    contact = " | ".join(x for x in [email_override or b.get("email"), b.get("phone"), b.get("location"), *links] if x)
     story.append(Paragraph(esc(contact), s_contact))
 
     def heading(text):
