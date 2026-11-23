@@ -4,6 +4,8 @@ Build a per-role variant of your resume PDF by **reordering the bullets you
 already have** — and nothing else. It cannot write, edit, add, or remove a
 single word, by construction.
 
+![How a variant is built and verified](docs/workflow.svg)
+
 ## Why
 
 Tailoring a resume for a posting usually means quietly rewriting bullets
@@ -90,12 +92,22 @@ resemblance to a real person is coincidental) and a spec written for a
 fictional Delivery Manager posting. Run the commands above against them to
 see the --list output, a built variant, and the verification pass.
 
+In the variant built from the sample spec, the incident-response bullet
+leads the Operations Lead role because the spec put it first; everything
+else is the sample resume's own wording, untouched. `verify.py` on the
+sample spec reports an exact permutation for both roles, the project, and
+the skill groups: `RESULT: PASS — the spec only reorders`.
+
 ## Limits, stated plainly
 
 - **Specs are snapshot-bound.** If the resume changes (a bullet added or
   reworded), index-based entries can shift. Re-run `--list` and re-derive
   the spec; substring entries are more resilient, but never reuse a spec
-  blindly across a resume change.
+  blindly across a resume change. This is not hypothetical: the base
+  resumes behind this tool were overhauled in November 2026 (summary
+  rewritten, bullets reordered at the source), and every live spec was
+  re-derived from a fresh `--list` afterward. Treat any base-resume
+  change as a spec-invalidating event.
 - **Length doesn't change.** Same bullets, same length — a two-page resume
   yields two-page variants. A one-page resume is a separate, human rewrite.
 - **Build failures should fall back, not block.** If a variant build errors,
