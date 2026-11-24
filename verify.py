@@ -14,6 +14,7 @@ the PDF renderer consumes exactly these lists, so a variant PDF built
 from a passing spec contains precisely the words of the unmodified
 render, in a different order.
 """
+from collections import Counter
 import json
 import sys
 
@@ -24,8 +25,10 @@ def main():
     if len(sys.argv) != 3:
         print("usage: verify.py resume.json spec.json", file=sys.stderr)
         return 2
-    data = json.load(open(sys.argv[1]))["data"]
-    spec = json.load(open(sys.argv[2]))
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)["data"]
+    with open(sys.argv[2], encoding="utf-8") as f:
+        spec = json.load(f)
 
     lists = {norm_key(k): (label, bl) for k, label, bl in role_bullet_lists(data)}
     failures = 0
@@ -54,10 +57,17 @@ def main():
     names = [it.get("name", "") for it in skill_items]
     order = spec.get("skill_order") or []
     if order:
-        by_name = {norm_key(n): n for n in names}
-        picked = [by_name[norm_key(n)] for n in order if norm_key(n) in by_name]
-        rest = [n for n in names if n not in picked]
-        if sorted(picked + rest) == sorted(names):
+        picked = []
+        claimed = set()
+        for name in order:
+            nk = norm_key(name)
+            for i, n in enumerate(names):
+                if i not in claimed and norm_key(n) == nk:
+                    picked.append(n)
+                    claimed.add(i)
+                    break
+        rest = [n for i, n in enumerate(names) if i not in claimed]
+        if Counter(norm_key(n) for n in picked + rest) == Counter(norm_key(n) for n in names):
             print(f"PASS  Skills: {len(names)} groups, exact permutation")
         else:
             failures += 1

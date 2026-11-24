@@ -52,25 +52,20 @@ import json
 import re
 import sys
 
-from reportlab.lib.pagesizes import LETTER
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import (
-    HRFlowable,
-    ListFlowable,
-    ListItem,
-    Paragraph,
-    SimpleDocTemplate,
-)
 
 def bullets(desc):
-    """Extract <li> items as clean text; fall back to paragraphs."""
-    items = re.findall(r"<li>(.*?)</li>", desc or "", flags=re.S)
+    """Extract <li> items as clean text; fall back to paragraphs or plain text."""
+    raw = desc or ""
+    items = re.findall(r"<li(?:\s[^>]*)?>(.*?)</li\s*>", raw, flags=re.S | re.I)
     if not items:
-        items = re.findall(r"<p>(.*?)</p>", desc or "", flags=re.S)
+        items = re.findall(r"<p(?:\s[^>]*)?>(.*?)</p\s*>", raw, flags=re.S | re.I)
+    if not items and raw.strip():
+        items = [raw]
     out = []
     for it in items:
-        text = htmlmod.unescape(re.sub(r"<[^>]+>", "", it)).strip()
+        cleaned = re.sub(r"<br(?:\s[^>]*)?/?>", " ", it, flags=re.I)
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        text = htmlmod.unescape(cleaned).strip()
         if text:
             out.append(text)
     return out
@@ -127,13 +122,17 @@ def apply_order(original, order, label):
     unplaced match). Unknown entries warn and are skipped. The result is
     always a permutation of the original list — nothing added or dropped.
     """
+    if not isinstance(order, list):
+        return list(original), [
+            f"  WARN [{label}]: expected a list for order, got {type(order).__name__}; ignored"
+        ]
     if not order:
         return list(original), []
     placed = []
     used = set()
     warnings = []
     for entry in order:
-        if isinstance(entry, int):
+        if isinstance(entry, int) and not isinstance(entry, bool):
             if 0 <= entry < len(original) and entry not in used:
                 placed.append(original[entry])
                 used.add(entry)
@@ -143,6 +142,11 @@ def apply_order(original, order, label):
                     "already placed; ignored"
                 )
         elif isinstance(entry, str):
+            if not entry.strip():
+                warnings.append(
+                    f"  WARN [{label}]: empty substring {entry!r}; ignored"
+                )
+                continue
             needle = entry.lower()
             match = None
             for i, b in enumerate(original):
@@ -180,22 +184,68 @@ def list_bullets(data):
 
 
 def build(data, spec, pdf_path, email_override=None):
+    try:
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import (
+            HRFlowable,
+            ListFlowable,
+            ListItem,
+            Paragraph,
+            SimpleDocTemplate,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "reportlab is required to build PDFs (install it with: pip install reportlab)"
+        ) from exc
+
     b = data["basics"]
     secs = data["sections"]
 
     # Resolve emphasis orders against the real bullet lists first, so a
     # bad spec key fails loudly as a warning, never silently.
-    lists = {norm_key(k): (label, bl) for k, label, bl in role_bullet_lists(data)}
+    lists = {}
+    dup_keys = set()
+    for k, label, bl in role_bullet_lists(data):
+        nk = norm_key(k)
+        if nk in lists or nk in dup_keys:
+            lists.pop(nk, None)
+            if nk not in dup_keys:
+                dup_keys.add(nk)
+                print(
+                    f"  WARN: duplicate role/project key {nk!r} ({label}); "
+                    "not reordering, each entry keeps its own bullets",
+                    file=sys.stderr,
+                )
+        else:
+            lists[nk] = (label, bl)
+
     bullet_order = spec.get("bullet_order", {}) or {}
     project_order = spec.get("project_bullet_order", {}) or {}
     ordered = {}   # norm key -> reordered bullet list
     for key, order in list(bullet_order.items()) + list(project_order.items()):
         nk = norm_key(key)
+        pnk = norm_key("project|" + key)
+        if nk in dup_keys:
+            print(
+                f"  WARN: spec key {key!r} matches duplicate key {nk!r}; "
+                "ignored so each entry keeps its own bullets",
+                file=sys.stderr,
+            )
+            continue
         if nk not in lists:
             # Project keys are stored as "project|<name>"; accept a bare
             # project name too.
-            if norm_key("project|" + key) in lists:
-                nk = norm_key("project|" + key)
+            if pnk in dup_keys:
+                print(
+                    f"  WARN: spec key {key!r} matches duplicate key {pnk!r}; "
+                    "ignored so each entry keeps its own bullets",
+                    file=sys.stderr,
+                )
+                continue
+            if pnk in lists:
+                nk = pnk
             else:
                 print(f"  WARN: spec key {key!r} matched no role/project; ignored",
                       file=sys.stderr)
@@ -207,19 +257,23 @@ def build(data, spec, pdf_path, email_override=None):
 
     skill_order = spec.get("skill_order", []) or []
     skill_items = [it for it in secs["skills"]["items"] if not it.get("hidden")]
-    skill_by_name = {norm_key(it.get("name", "")): it for it in skill_items}
     ordered_skills = []
-    used_skills = set()
+    claimed_skills = set()
     for name in skill_order:
         nk = norm_key(name)
-        if nk in skill_by_name and nk not in used_skills:
-            ordered_skills.append(skill_by_name[nk])
-            used_skills.add(nk)
+        match = None
+        for i, it in enumerate(skill_items):
+            if i not in claimed_skills and norm_key(it.get("name", "")) == nk:
+                match = i
+                break
+        if match is not None:
+            ordered_skills.append(skill_items[match])
+            claimed_skills.add(match)
         else:
             print(f"  WARN: skill group {name!r} matched nothing or repeats; ignored",
                   file=sys.stderr)
-    ordered_skills += [it for it in skill_items
-                       if norm_key(it.get("name", "")) not in used_skills]
+    ordered_skills += [it for i, it in enumerate(skill_items)
+                       if i not in claimed_skills]
 
     s_title = ParagraphStyle("Title2", fontName="Helvetica-Bold", fontSize=19, leading=22)
     s_head = ParagraphStyle("Head", fontName="Helvetica", fontSize=11, leading=13, textColor="#333333")
@@ -242,7 +296,7 @@ def build(data, spec, pdf_path, email_override=None):
     story.append(Paragraph(esc(contact), s_contact))
 
     def heading(text):
-        story.append(Paragraph(esc(text).upper(), s_h2))
+        story.append(Paragraph(esc((text or "").upper()), s_h2))
         story.append(HRFlowable(width="100%", thickness=1, color="#222222", spaceAfter=4))
 
     def bullet_list(items):
@@ -259,7 +313,10 @@ def build(data, spec, pdf_path, email_override=None):
         return ordered.get(norm_key(key), default)
 
     summary = data["summary"].get("content", "")
-    summary_text = " ".join(bullets(summary)) or re.sub(r"<[^>]+>", "", summary).strip()
+    summary_text = (
+        " ".join(bullets(summary))
+        or htmlmod.unescape(re.sub(r"<[^>]+>", "", summary)).strip()
+    )
     if summary_text:
         heading("Summary")
         story.append(Paragraph(esc(summary_text), s_body))
@@ -347,7 +404,8 @@ def main():
         email_override = argv[i + 1]
         del argv[i:i + 2]
     if len(argv) >= 2 and argv[0] == "--list":
-        data = json.load(open(argv[1]))["data"]
+        with open(argv[1], encoding="utf-8") as f:
+            data = json.load(f)["data"]
         list_bullets(data)
         return
     if len(argv) != 3:
@@ -355,9 +413,18 @@ def main():
         print("       build_variant.py [--email addr] resume.json spec.json out.pdf", file=sys.stderr)
         sys.exit(2)
     src, spec_path, pdf_path = argv
-    data = json.load(open(src))["data"]
-    spec = json.load(open(spec_path)) if spec_path != "-" else {}
-    build(data, spec, pdf_path, email_override=email_override)
+    with open(src, encoding="utf-8") as f:
+        data = json.load(f)["data"]
+    if spec_path != "-":
+        with open(spec_path, encoding="utf-8") as f:
+            spec = json.load(f)
+    else:
+        spec = {}
+    try:
+        build(data, spec, pdf_path, email_override=email_override)
+    except ImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
