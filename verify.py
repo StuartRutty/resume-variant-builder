@@ -3,8 +3,9 @@
 
 For every role, project, and skill group a spec touches, this checks that
 the reordered list is an exact permutation of the original: same items,
-same wording, nothing added, nothing dropped. It also checks the lists a
-spec does NOT touch are returned unchanged.
+same wording, nothing added, nothing dropped. A spec key that matches a
+duplicated role/project name is skipped, mirroring the builder, which
+will not reorder an ambiguously named entry.
 
 Usage:
   python3 verify.py resume.json spec.json
@@ -30,14 +31,26 @@ def main():
     with open(sys.argv[2], encoding="utf-8") as f:
         spec = json.load(f)
 
-    lists = {norm_key(k): (label, bl) for k, label, bl in role_bullet_lists(data)}
+    lists = {}
+    dup_keys = set()
+    for k, label, bl in role_bullet_lists(data):
+        nk = norm_key(k)
+        if nk in lists or nk in dup_keys:
+            lists.pop(nk, None)
+            dup_keys.add(nk)
+        else:
+            lists[nk] = (label, bl)
     failures = 0
 
     def check(key, order):
         nonlocal failures
         nk = norm_key(key)
-        if nk not in lists and norm_key("project|" + key) in lists:
-            nk = norm_key("project|" + key)
+        pnk = norm_key("project|" + key)
+        if nk in dup_keys or pnk in dup_keys:
+            print(f"SKIP  {key!r}: duplicate role/project key (builder warns and will not reorder it)")
+            return
+        if nk not in lists and pnk in lists:
+            nk = pnk
         if nk not in lists:
             print(f"SKIP  {key!r}: no matching role/project (builder warns and ignores it)")
             return
